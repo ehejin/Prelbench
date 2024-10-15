@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]='1'
+os.environ["CUDA_VISIBLE_DEVICES"]='2'
 import argparse
 import copy
 import json
@@ -10,7 +10,7 @@ from typing import Dict
 
 import numpy as np
 import torch
-from examples.model import Model
+from examples.model import Model_PEARL
 from examples.text_embedder import GloveTextEmbedding
 from torch.nn import BCEWithLogitsLoss, L1Loss
 from torch_frame import stype
@@ -24,6 +24,66 @@ from relbench.datasets import get_dataset
 from relbench.modeling.graph import get_node_train_table_input, make_pkey_fkey_graph
 from relbench.modeling.utils import get_stype_proposal
 from relbench.tasks import get_task
+from examples.config import merge_config
+import torch_geometric.transforms as T
+from torch_geometric.utils import get_laplacian, to_dense_adj
+from torch_geometric.data import HeteroData, Data
+
+
+class transform_LAP():
+    def __init__(self, instance=None):
+        self.instance = None
+    def __call__(self, hetero_data):
+        node_mapping = {}  # Keep track of node indices from each type
+        start_idx = 0
+        total_num_nodes = 0
+        # Step 1: Map node types to homogeneous indices
+        for node_type in hetero_data.node_types:
+            node_data = hetero_data[node_type]
+            num_nodes = node_data['n_id'].size(0)
+            node_mapping[node_type] = torch.arange(start_idx, start_idx + num_nodes)
+            start_idx += num_nodes
+            total_num_nodes += num_nodes
+
+        # Step 2: Combine edge indices from all edge types
+        all_edges = []
+
+        for edge_type in hetero_data.edge_types:
+            src_type, relation_type, dst_type = edge_type
+            edge_index = hetero_data[edge_type].edge_index
+
+            # Map source and destination node indices to homogeneous space
+            src_nodes = node_mapping[src_type][edge_index[0]]
+            dst_nodes = node_mapping[dst_type][edge_index[1]]
+
+            # Append to combined edge list
+            all_edges.append(torch.stack([src_nodes, dst_nodes], dim=0))
+
+        # Concatenate all edge indices into one edge index tensor
+        if len(all_edges) > 0:
+            all_edges = torch.cat(all_edges, dim=1)
+
+        # Step 3: Create homogeneous Data object
+        homogeneous_data = Data(num_nodes=total_num_nodes, edge_index=all_edges)
+
+        # Step 4: Compute the Laplacian of the homogeneous graph
+        edge_index, edge_weight = get_laplacian(homogeneous_data.edge_index, normalization='sym')
+        laplacian = to_dense_adj(edge_index, edge_attr=edge_weight)
+
+        hetero_data.edge_index = edge_index
+        hetero_data.Lap = laplacian
+
+        return hetero_data
+
+'''class transform_LAP:
+    def __init__(self, instance=None):
+        self.instance = instance
+    
+    def __call__(self, instance):
+        L_edge_index, L_values = get_laplacian(instance.edge_index, normalization="sym", num_nodes=n)   # [2, X], [X]
+        L = to_dense_adj(L_edge_index, edge_attr=L_values, max_num_nodes=n).squeeze(dim=0)
+        instance.Lap = L
+        return data'''
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="rel-event")
@@ -39,15 +99,18 @@ parser.add_argument("--temporal_strategy", type=str, default="uniform")
 parser.add_argument("--max_steps_per_epoch", type=int, default=2000)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--gpu_id", type=int, default=2)
 parser.add_argument(
     "--cache_dir",
     type=str,
     default=os.path.expanduser("~/.cache/relbench_examples"),
 )
+parser.add_argument("--cfg", type=str, default=None, help="Path to PEARL cfg file")
 args = parser.parse_args()
+cfg = merge_config(args.cfg)
 
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f'cuda:{args.gpu_id}')
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)
@@ -76,26 +139,6 @@ data, col_stats_dict = make_pkey_fkey_graph(
     ),
     cache_dir=f"{args.cache_dir}/{args.dataset}/materialized",
 )
-
-
-'''import networkx as nx
-import matplotlib.pyplot as plt
-
-G = nx.Graph()
-
-qualifying_nodes = range(data['qualifying']['tf'].num_rows)  # Node IDs for qualifying
-race_nodes = range(data['races']['tf'].num_rows)  # Node IDs for races
-
-print(data)
-edge_index = data[('qualifying', 'f2p_raceId', 'races')]['edge_index']
-for i in range(edge_index.shape[1]):
-    src = edge_index[0, i]  # qualifying node
-    tgt = edge_index[1, i]  # race node
-    G.add_edge(f"qualifying_{src}", f"race_{tgt}")
-
-plt.figure(figsize=(10, 8))
-nx.draw(G, with_labels=False, node_size=10, font_size=10, width=0.5)
-plt.savefig("./graph_visualization.png")'''
 
 clamp_min, clamp_max = None, None
 if task.task_type == TaskType.BINARY_CLASSIFICATION:
@@ -126,18 +169,19 @@ for split in ["train", "val", "test"]:
     table = task.get_table(split)
     table_input = get_node_train_table_input(table=table, task=task)
     entity_table = table_input.nodes[0]
+    transform2 = T.Compose([table_input.transform, transform_LAP()])
     loader_dict[split] = NeighborLoader(
         data,
         num_neighbors=[int(args.num_neighbors / 2**i) for i in range(args.num_layers)],
         time_attr="time",
         input_nodes=table_input.nodes,
         input_time=table_input.time,
-        transform=table_input.transform,
+        transform=transform2,
         batch_size=args.batch_size,
         temporal_strategy=args.temporal_strategy,
         shuffle=split == "train",
         num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
+        persistent_workers=args.num_workers > 0
     )
 
 
@@ -178,11 +222,22 @@ def train() -> float:
     total_steps = min(len(loader_dict["train"]), args.max_steps_per_epoch)
     for batch in tqdm(loader_dict["train"], total=total_steps):
         batch = batch.to(device)
+        W_list = []
+        for i in range(len(batch.Lap)):
+            if cfg.BASIS:
+                W = torch.eye(batch.Lap[i].shape[0]).to(device)
+            else:
+                W = torch.randn(batch.Lap[i].shape[0],cfg.num_samples).to(device) #BxNxM
+            if len(W.shape) < 2:
+                print("TRAIN BATCH, i, LAP|W: ", i, batch.Lap[i].shape, W.shape)
+            W_list.append(W)
+        #x_R = torch.randn((batch_size, 80, 1)).to(device)
 
         optimizer.zero_grad()
         pred = model(
             batch,
             task.entity_table,
+            W_list
         )
         pred = pred.view(-1) if pred.size(1) == 1 else pred
 
@@ -207,9 +262,19 @@ def test(loader: NeighborLoader) -> np.ndarray:
     pred_list = []
     for batch in tqdm(loader):
         batch = batch.to(device)
+        W_list = []
+        for i in range(len(batch.Lap)):
+            if cfg.BASIS:
+                W = torch.eye(batch.Lap[i].shape[0]).to(device)
+            else:
+                W = torch.randn(batch.Lap[i].shape[0],cfg.num_samples).to(device) #BxNxM
+            if len(W.shape) < 2:
+                print("TRAIN BATCH, i, LAP|W: ", i, batch.Lap[i].shape, W.shape)
+            W_list.append(W)
         pred = model(
             batch,
             task.entity_table,
+            W
         )
         if task.task_type == TaskType.REGRESSION:
             assert clamp_min is not None
@@ -227,7 +292,7 @@ def test(loader: NeighborLoader) -> np.ndarray:
     return torch.cat(pred_list, dim=0).numpy()
 
 
-model = Model(
+model = Model_PEARL(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
@@ -235,6 +300,7 @@ model = Model(
     out_channels=out_channels,
     aggr=args.aggr,
     norm="batch_norm",
+    cfg=cfg
 ).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 state_dict = None
