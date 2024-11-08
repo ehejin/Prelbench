@@ -94,6 +94,7 @@ class HeteroConv(torch.nn.Module):
     def forward(
         self,
         PE,
+        reverse_node_mapping,
         *args_dict,
         **kwargs_dict
     ) -> Dict[NodeType, Tensor]:
@@ -118,8 +119,10 @@ class HeteroConv(torch.nn.Module):
                 :meth:`~torch_geometric.nn.conv.HeteroConv.forward` via
                 :obj:`edge_attr_dict = { edge_type: edge_attr }`.
         """
-        for node_type, x in x_dict.items():
-            x_dict[node_type] = x + PE
+        reverse_node_mapping = reverse_node_mapping
+        for homogeneous_idx, pos_encoding in enumerate(self.pe_embedding(PE)):
+            node_type, node_idx = reverse_node_mapping[homogeneous_idx]
+            args_dict[0][node_type][node_idx] = args_dict[0][node_type][node_idx] + pos_encoding
             
         out_dict: Dict[str, List[Tensor]] = {}
 

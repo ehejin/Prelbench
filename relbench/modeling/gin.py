@@ -21,7 +21,8 @@ class GIN(nn.Module):
         if bn:
             self.batch_norms = nn.ModuleList()
         for _ in range(n_layers - 1):
-            layer = GINLayer(create_mlp(in_dims, hidden_dims))
+            new_mlp = create_mlp(in_dims, hidden_dims)
+            layer = GINLayer(new_mlp)
             self.layers.append(layer)
             in_dims = hidden_dims
             if bn:
@@ -78,7 +79,7 @@ class GINLayer(MessagePassing):
         :return: Output node feature matrix. [N_sum, ***, D_out]
         """
         # Contains sum(j in N(i)) {message(j -> i)} for each node i.
-        if laplacian == 'L':
+        '''if laplacian == 'L':
             edge_index, edge_weight = get_laplacian(edge_index, normalization='sym', num_nodes=X.size(0))
             laplacian = to_dense_adj(edge_index, edge_attr=edge_weight).squeeze(0)  # [N_sum, N_sum]
             S = torch.einsum('ij,jkd->ikd', laplacian, X)   # [N_sum, ***, D_in]
@@ -96,7 +97,7 @@ class GINLayer(MessagePassing):
             S = torch.einsum('ij,jkd->ikd', random_walk, X)  # [N_sum, *, D_in]
             Z = (1 + self.eps) * X   # [N_sum, ***, D_in]
             Z = Z + S                # [N_sum, ***, D_in]
-            return self.mlp(Z, mask)       # [N_sum, ***, D_out]
+            return self.mlp(Z, mask)       # [N_sum, ***, D_out]'''
 
         S = self.propagate(edge_index, X=X)   # [N_sum, *** D_in]
 

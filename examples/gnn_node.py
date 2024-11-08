@@ -1,6 +1,6 @@
 import os
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]='1'
+#os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+#os.environ["CUDA_VISIBLE_DEVICES"]='1'
 import argparse
 import copy
 import json
@@ -24,6 +24,7 @@ from relbench.datasets import get_dataset
 from relbench.modeling.graph import get_node_train_table_input, make_pkey_fkey_graph
 from relbench.modeling.utils import get_stype_proposal
 from relbench.tasks import get_task
+import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="rel-event")
@@ -46,8 +47,9 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+run = wandb.init(project='Relbench-HM', name='og_relbench')
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f'cuda:{0}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)
@@ -77,25 +79,6 @@ data, col_stats_dict = make_pkey_fkey_graph(
     cache_dir=f"{args.cache_dir}/{args.dataset}/materialized",
 )
 
-
-'''import networkx as nx
-import matplotlib.pyplot as plt
-
-G = nx.Graph()
-
-qualifying_nodes = range(data['qualifying']['tf'].num_rows)  # Node IDs for qualifying
-race_nodes = range(data['races']['tf'].num_rows)  # Node IDs for races
-
-print(data)
-edge_index = data[('qualifying', 'f2p_raceId', 'races')]['edge_index']
-for i in range(edge_index.shape[1]):
-    src = edge_index[0, i]  # qualifying node
-    tgt = edge_index[1, i]  # race node
-    G.add_edge(f"qualifying_{src}", f"race_{tgt}")
-
-plt.figure(figsize=(10, 8))
-nx.draw(G, with_labels=False, node_size=10, font_size=10, width=0.5)
-plt.savefig("./graph_visualization.png")'''
 
 clamp_min, clamp_max = None, None
 if task.task_type == TaskType.BINARY_CLASSIFICATION:
@@ -143,32 +126,6 @@ for split in ["train", "val", "test"]:
 
 import networkx as nx
 import matplotlib.pyplot as plt
-
-def visualize_hetero_graph(data):
-    G = nx.Graph()  # Create an undirected graph (or use nx.DiGraph() for directed)
-    print('doing node types')
-    # Add nodes for each node type in HeteroData (like qualifying, drivers, results, etc.)
-    for node_type in data.node_types:
-        n_ids = data[node_type].n_id  # Get node IDs
-        G.add_nodes_from([f"{node_type}_{i}" for i in n_ids], node_type=node_type)
-
-    # Visualize edges by iterating over edge types
-    print('doing edge tupes')
-    for edge_type in data.edge_types:
-        edge_index = data[edge_type].edge_index
-        src_type, relation, tgt_type = edge_type
-
-        for i in range(edge_index.shape[1]):  # Loop over each edge
-            src = edge_index[0, i]  # Source node
-            tgt = edge_index[1, i]  # Target node
-            G.add_edge(f"{src_type}_{src}", f"{tgt_type}_{tgt}", relation=relation)
-
-    # Draw the graph using networkx and matplotlib
-    print('drawing and saving fig')
-    plt.figure(figsize=(10, 8))
-    pos = nx.spring_layout(G)  # You can use different layouts like spring_layout, circular_layout, etc.
-    nx.draw(G, pos, with_labels=False, node_size=20, font_size=8, edge_color="gray", width=0.5)
-    plt.savefig("./graph_visualization2.png")
 
 def train() -> float:
     model.train()
@@ -243,7 +200,12 @@ for epoch in range(1, args.epochs + 1):
     train_loss = train()
     val_pred = test(loader_dict["val"])
     val_metrics = task.evaluate(val_pred, task.get_table("val"))
-    print(f"Epoch: {epoch:02d}, Train loss: {train_loss}, Val metrics: {val_metrics}")
+    test_pred = test(loader_dict["test"])
+    test_metrics = task.evaluate(test_pred)
+    val_metrics["Train Loss"] = train_loss
+    val_metrics['test_mae'] = test_metrics['mae']
+    wandb.log(val_metrics)
+    #print(f"Epoch: {epoch:02d}, Train loss: {train_loss}, Val metrics: {val_metrics}")
 
     if (higher_is_better and val_metrics[tune_metric] >= best_val_metric) or (
         not higher_is_better and val_metrics[tune_metric] <= best_val_metric
@@ -259,4 +221,7 @@ print(f"Best Val metrics: {val_metrics}")
 
 test_pred = test(loader_dict["test"])
 test_metrics = task.evaluate(test_pred)
+wandb.run.summary["Final_TEST_AP"] = test_metrics['average_precision']
+wandb.run.summary["Final_TEST_accuracy"] = test_metrics['accuracy']
+wandb.run.summary["Final_TEST_AUROC"] = test_metrics['roc_auc'] 
 print(f"Best test metrics: {test_metrics}")

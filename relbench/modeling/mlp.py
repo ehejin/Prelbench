@@ -54,6 +54,7 @@ class MLPLayer(nn.Module):
                  dropout_prob: float, norm_type: str = "batch", NEW_BATCH_NORM=False) -> None:
         super().__init__()
         # self.fc = nn.Linear(in_dims, out_dims, bias=not use_bn)
+        print(in_dims)
         self.fc = nn.Linear(in_dims, out_dims, bias=True)
         self.NEW_BATCH_NORM = NEW_BATCH_NORM
         if NEW_BATCH_NORM:

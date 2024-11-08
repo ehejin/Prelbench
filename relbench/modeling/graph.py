@@ -16,7 +16,6 @@ from torch_geometric.utils import sort_edge_index
 from relbench.base import Database, EntityTask, RecommendationTask, Table, TaskType
 from relbench.modeling.utils import remove_pkey_fkey, to_unix_time
 
-
 def make_pkey_fkey_graph(
     db: Database,
     col_to_stype_dict: Dict[str, Dict[str, stype]],
@@ -67,6 +66,8 @@ def make_pkey_fkey_graph(
         path = (
             None if cache_dir is None else os.path.join(cache_dir, f"{table_name}.pt")
         )
+        #col_to_stype['PE'] = stype.numerical
+
         dataset = Dataset(
             df=df,
             col_to_stype=col_to_stype,

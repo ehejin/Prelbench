@@ -65,11 +65,13 @@ class K_PEARL_PE(nn.Module):
         self.phi = phi
         self.k = k
         self.BASIS = BASIS
+        self.running_sum = 0
+        self.total = 0
         print("SPE BASIS IS: ", self.BASIS)
         print("SPE k is: ", self.k)
 
     def forward(
-        self, Lap, W, edge_index: torch.Tensor
+        self, Lap, W, edge_index: torch.Tensor, final=False
     ) -> torch.Tensor:
         """
         :param Lap: Laplacian
@@ -90,11 +92,46 @@ class K_PEARL_PE(nn.Module):
                     output = self.activation(output)
                     output = output.transpose(0, 1)
             W_list.append(output)             # [NxMxK]*B
-        return self.phi(W_list, edge_index, self.BASIS)   # [N_sum, D_pe]
+        return self.phi(W_list, edge_index, self.BASIS, final=final)   # [N_sum, D_pe]
 
     @property
     def out_dims(self) -> int:
         return self.phi.out_dims
+
+
+class PEARL_PE1(nn.Module):
+    # pe = rho(phi(V)+phi(-V))
+    def __init__(self, phi: nn.Module, rho: nn.Module) -> None:
+        super(PEARL_PE1, self).__init__()
+        self.phi = phi
+        self.rho = rho
+        self.running_sum = 0
+        self.total = 0
+
+    def forward(
+            self, Lambda: torch.Tensor, V: torch.Tensor, edge_index: torch.Tensor,
+            accumulate, final
+    ) -> torch.Tensor:
+        x = V #NxMx1
+        x = self.phi(x, edge_index) 
+        if accumulate:
+            self.running_sum += x.sum(dim=1) #+ self.phi(-x, edge_index) # [N, D_pe, hidden_dims]
+            self.total += x.shape[1]
+        else:
+            x = x.mean(dim=1)
+            x = self.rho(x) 
+        if accumulate and final:
+            x = self.running_sum / self.total
+            x = self.rho(x) 
+            self.running_sum = 0
+            self.total = 0
+
+        return x
+
+    @property
+    def out_dims(self) -> int:
+        return self.rho.out_dims
+
 
 
 class MLPPhi(nn.Module):
@@ -147,8 +184,10 @@ class GINPhi(nn.Module):
         super().__init__()
         self.gin = GIN(n_layers, in_dims, hidden_dims, out_dims, create_mlp, bn, laplacian=RAND_LAP)
         self.mlp = create_mlp(out_dims, out_dims, use_bias=True)
+        self.running_sum = 0
+        self.total = 0
 
-    def forward(self, W_list: List[torch.Tensor], edge_index: torch.Tensor, BASIS, mean=False) -> torch.Tensor:
+    def forward(self, W_list: List[torch.Tensor], edge_index: torch.Tensor, BASIS, mean=False, running_sum=True, final=False) -> torch.Tensor:
         """
         :param W_list: The {V * psi_l(Lambda) * V^T: l in [m]} tensors. [N_i, N_i, M] * B
         :param edge_index: Graph connectivity in COO format. [2, E_sum]
@@ -160,7 +199,12 @@ class GINPhi(nn.Module):
             if mean:
                 PE = (PE).mean(dim=1) # sum or mean along M? get N, D_pe
             else:
-                PE = (PE).sum(dim=1)
+                if running_sum:
+                    self.running_sum += (PE).sum(dim=1)
+                PE = self.running_sum
+                if final:
+                    self.running_sum = 0
+                #PE = (PE).sum(dim=1)
             return PE               # [N_sum, D_pe]
         else:
             n_max = max(W.size(0) for W in W_list)

@@ -148,6 +148,8 @@ class BaseTask:
                 f"The number of training time frames is too few. "
                 f"({len(timestamps)} given)"
             )
+        
+        print(split, timestamps)
 
         table = self.make_table(db, timestamps)
         table = self.filter_dangling_entities(table)
@@ -189,6 +191,85 @@ class BaseTask:
 
             if self.cache_dir:
                 table.save(table_path)
+
+            if mask_input_cols:
+                table = self._mask_input_cols(table)
+
+        return table
+    
+    def _get_tableCV(self, fold_idx, split: str) -> Table:
+        r"""Helper function to get a table for a split."""
+
+        db = self.dataset.get_db(upto_test_timestamp=False)#split != "test")
+        total_time_range = db.max_timestamp - db.min_timestamp
+        fold_duration = total_time_range / 10
+        train_end_time = db.min_timestamp + fold_duration * fold_idx
+        val_end_time = db.max_timestamp #+ fold_duration * (fold_idx + 1)
+
+        if split == "train":
+            start = train_end_time - self.timedelta
+            end = db.min_timestamp
+            freq = -self.timedelta
+
+        elif split == "val":
+            if self.dataset.val_timestamp + self.timedelta > db.max_timestamp:
+                raise RuntimeError(
+                    "val timestamp + timedelta is larger than max timestamp! "
+                    "This would cause val labels to be generated with "
+                    "insufficient aggregation time."
+                )
+            start = train_end_time
+            end = val_end_time
+            freq = self.timedelta
+
+        timestamps = pd.date_range(start=start, end=end, freq=freq)
+
+        if split == "train" and len(timestamps) < 3:
+            raise RuntimeError(
+                f"The number of training time frames is too few. "
+                f"({len(timestamps)} given)"
+            )
+
+        table = self.make_table(db, timestamps)
+        table = self.filter_dangling_entities(table)
+
+        return table
+
+    @lru_cache(maxsize=None)
+    def get_tableCV(self, idx, split, mask_input_cols=None):
+        r"""Get a table for a split.
+
+        Args:
+            split: The split to get the table for. One of "train", "val", or "test".
+            mask_input_cols: If True, keep only the input columns in the table. If
+                None, mask the input columns only for the test split. This helps
+                prevent data leakage.
+
+        Returns:
+            The task table for the split.
+
+        The table is cached in memory.
+        """
+
+        if mask_input_cols is None:
+            mask_input_cols = split == "test"
+
+        table_path = f"{self.cache_dir}/{split}.parquet"
+        #if self.cache_dir and Path(table_path).exists():
+        #    table = Table.load(table_path)
+        #else:
+        print(f"Making task table for {split} split from scratch...")
+        print(
+            "(You can also use `get_task(..., download=True)` "
+            "for tasks prepared by the RelBench team.)"
+        )
+        tic = time.time()
+        table = self._get_tableCV(idx, split)
+        toc = time.time()
+        print(f"Done in {toc - tic:.2f} seconds.")
+
+        if self.cache_dir:
+            table.save(table_path)
 
         if mask_input_cols:
             table = self._mask_input_cols(table)
