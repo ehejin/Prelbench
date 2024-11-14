@@ -179,13 +179,14 @@ class GINPhi(nn.Module):
     gin: GIN
 
     def __init__(
-        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool, RAND_LAP
+        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool, RAND_LAP, pooling=False
     ) -> None:
         super().__init__()
         self.gin = GIN(n_layers, in_dims, hidden_dims, out_dims, create_mlp, bn, laplacian=RAND_LAP)
-        self.mlp = create_mlp(out_dims, out_dims, use_bias=True)
+        #self.mlp = create_mlp(out_dims, out_dims, use_bias=True)
         self.running_sum = 0
         self.total = 0
+        self.pooling=pooling
 
     def forward(self, W_list: List[torch.Tensor], edge_index: torch.Tensor, BASIS, mean=False, running_sum=True, final=False) -> torch.Tensor:
         """
@@ -195,16 +196,21 @@ class GINPhi(nn.Module):
         """ 
         if not BASIS:
             W = torch.cat(W_list, dim=0)   # [N_sum, M, K]
-            PE = self.gin(W, edge_index)  
+            PE = self.gin(W, edge_index)  # [N,M,D]
             if mean:
                 PE = (PE).mean(dim=1) # sum or mean along M? get N, D_pe
             else:
                 if running_sum:
-                    self.running_sum += (PE).sum(dim=1)
-                PE = self.running_sum
+                    if self.pooling:
+                        self.running_sum += (PE).sum(dim=1)
+                    else:
+                        self.running_sum += PE
+                PE = PE
                 if final:
+                    PE = self.running_sum
                     self.running_sum = 0
-                #PE = (PE).sum(dim=1)
+                if self.pooling:
+                    PE = (PE).sum(dim=1)
             return PE               # [N_sum, D_pe]
         else:
             n_max = max(W.size(0) for W in W_list)

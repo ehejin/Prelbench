@@ -7,7 +7,7 @@ from torch_frame.data.stats import StatType
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import MLP
 from torch_geometric.typing import NodeType
-from relbench.modeling.nn import HeteroEncoder, HeteroGraphSAGE, HeteroEncoder_PEARL, HeteroGraphSAGE_PEARL, HeteroTemporalEncoder
+from relbench.modeling.nn import HeteroEncoder, HeteroGraphSAGE, HeteroGraphSAGE_LINK, HeteroEncoder_PEARL, HeteroGraphSAGE_PEARL, HeteroTemporalEncoder
 #from relbench.modeling.pe import GINPhi
 from relbench.modeling.mlp import MLP as MLP2
 from relbench.modeling.pe import K_PEARL_PE, GINPhi, PEARL_PE1
@@ -310,18 +310,21 @@ class Model_PEARL(torch.nn.Module):
                 tensor_list = [PE_dict[node_type].get(i, torch.zeros_like(pos_encoding)) for i in range(max_index + 1)]
                 PE_dict[node_type] = torch.stack(tensor_list)
         else:
-            for k in range(10):
+            for k in range(20):
                 W_list = []
                 for i in range(len(batch.Lap)):
                     if self.cfg.BASIS:
                         W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
                     else:
-                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//10).to(self.device) #BxNxM
+                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//20).to(self.device) #BxNxM
                     W_list.append(W)
-                if k < 9:
-                    self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
+                if k < 19:
+                    with torch.no_grad():
+                        self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
                 else:
                     PE = self.positional_encoding(batch.Lap, W_list, batch.edge_index, final=True)
+                del W_list, W
+                torch.cuda.empty_cache()
             if print_emb:
                 print(PE.shape)
                 np.save('./embeddings5.npy', PE.detach().cpu().numpy())
@@ -428,3 +431,96 @@ class Model_PEARL(torch.nn.Module):
         )
 
         return self.head(x_dict[dst_table])
+    
+
+
+
+
+class PEARL_LINK(Model):
+    def __init__(
+        self,
+        data: HeteroData,
+        col_stats_dict: Dict[str, Dict[str, Dict[StatType, Any]]],
+        num_layers: int,
+        channels: int,
+        out_channels: int,
+        aggr: str,
+        norm: str,
+        shallow_list: List[NodeType] = [],
+        id_awareness: bool = False,
+        cfg=None
+    ):
+        super().__init__(
+            data=data,
+            col_stats_dict=col_stats_dict,
+            num_layers=num_layers,
+            channels=channels,
+            out_channels=out_channels,
+            aggr=aggr,
+            norm=norm,
+            shallow_list=shallow_list,
+            id_awareness=id_awareness,
+        )
+
+        self.gnn = HeteroGraphSAGE_LINK(
+            node_types=data.node_types,
+            edge_types=data.edge_types,
+            channels=channels,
+            aggr=aggr,
+            num_layers=num_layers,
+            cfg=cfg
+        )
+
+        Phi = GINPhi(self.cfg.n_phi_layers, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
+                                self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False)
+                    
+        self.positional_encoding = K_PEARL_PE(Phi, cfg.BASIS, k=cfg.RAND_k, mlp_nlayers=cfg.RAND_mlp_nlayers, 
+                            mlp_hid=cfg.RAND_mlp_hid, spe_act=cfg.RAND_act, mlp_out=cfg.RAND_mlp_out)
+
+        #self.pe_embedding = torch.nn.Linear(self.positional_encoding.out_dims, self.cfg.node_emb_dims)
+
+    def forward(
+        self,
+        batch: HeteroData,
+        entity_table: NodeType,
+        extra_features: Tensor,
+    ) -> Tensor:
+        seed_time = batch[entity_table].seed_time
+        for k in range(20):
+            W_list = []
+            for i in range(len(batch.Lap)):
+                if self.cfg.BASIS:
+                    W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
+                else:
+                    W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//20).to(self.device) #BxNxM
+                W_list.append(W)
+            if k < 19:
+                with torch.no_grad():
+                    self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
+            else:
+                PE = self.positional_encoding(batch.Lap, W_list, batch.edge_index, final=True)
+            del W_list, W
+            torch.cuda.empty_cache()
+        x_dict = self.encoder(batch.tf_dict)
+
+        rel_time_dict = self.temporal_encoder(
+            seed_time, batch.time_dict, batch.batch_dict
+        )
+
+        for node_type, rel_time in rel_time_dict.items():
+            x_dict[node_type] = x_dict[node_type] + rel_time
+
+        for node_type, embedding in self.embedding_dict.items():
+            x_dict[node_type] = x_dict[node_type] + embedding(batch[node_type].n_id)
+
+        x_dict = self.gnn(
+            x_dict, 
+            batch.edge_index_dict,
+            batch.num_sampled_nodes_dict,
+            batch.num_sampled_edges_dict,
+            PE, 
+            batch.reverse_node_mapping,
+            batch.edge_index
+        )
+
+        return self.head(x_dict[entity_table][: seed_time.size(0)])

@@ -4,11 +4,11 @@ import torch
 import torch_frame
 from torch import Tensor
 from torch_frame.data.stats import StatType
-#from torch_frame.nn.models import ResNet
-from relbench.modeling.resnet import ResNet
+from torch_frame.nn.models import ResNet 
+from relbench.modeling.resnet import ResNet as ResNet2
 from torch_geometric.nn import LayerNorm, PositionalEncoding, SAGEConv
-from torch_geometric.typing import EdgeType, NodeType
-#from relbench.modeling.heteroConv import HeteroConv
+from torch_geometric.typing import EdgeType, NodeType 
+from relbench.modeling.heteroConv import HeteroConv as HeteroConv2
 from torch_geometric.nn.conv import HeteroConv
 
 class HeteroEncoder(torch.nn.Module):
@@ -115,7 +115,7 @@ class HeteroEncoder_PEARL(torch.nn.Module):
         channels: int,
         node_to_col_names_dict: Dict[NodeType, Dict[torch_frame.stype, List[str]]],
         node_to_col_stats: Dict[NodeType, Dict[str, Dict[StatType, Any]]],
-        torch_frame_model_cls=ResNet,
+        torch_frame_model_cls=ResNet2,
         torch_frame_model_kwargs: Dict[str, Any] = {
             "channels": 128,
             "num_layers": 4,
@@ -330,5 +330,61 @@ class HeteroGraphSAGE_PEARL(torch.nn.Module):
             x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
             new_x_dict = {key: x.detach().relu() for key, x in x_dict.items()}
             x_dict = new_x_dict#{key: x.relu() for key, x in x_dict.items()}
+
+        return x_dict
+
+
+
+class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
+    def __init__(
+        self,
+        node_types: List[NodeType],
+        edge_types: List[EdgeType],
+        channels: int,
+        aggr: str = "mean",
+        num_layers: int = 2,
+        cfg=None
+    ):
+        super().__init__(
+            node_types=node_types,
+            edge_types=edge_types,
+            channels=channels,
+            aggr=aggr,
+            num_layers=num_layers
+        )
+        self.cfg = cfg
+
+        self.convs = torch.nn.ModuleList()
+        for _ in range(num_layers):
+            conv = HeteroConv2(
+                {
+                    edge_type: SAGEConv((channels, channels), channels, aggr=aggr)
+                    for edge_type in edge_types
+                },
+                aggr="sum",
+            )
+            self.convs.append(conv)
+
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        for norm_dict in self.norms:
+            for norm in norm_dict.values():
+                norm.reset_parameters()
+        self.MP.reset_parameters()
+
+    def forward(
+        self,
+        x_dict: Dict[NodeType, Tensor],
+        edge_index_dict: Dict[NodeType, Tensor],
+        PE,
+        reverse_mapping,
+        edge_index
+    ) -> Dict[NodeType, Tensor]:
+        for _, (conv, norm_dict) in enumerate(zip(self.convs, self.norms)):
+            x_dict = conv(x_dict, edge_index_dict, PE=PE, reverse_node_mapping=reverse_mapping, edge_index=edge_index)
+            x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
+            x_dict = {key: x.relu() for key, x in x_dict.items()}
 
         return x_dict

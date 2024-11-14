@@ -29,9 +29,35 @@ import torch_geometric.transforms as T
 from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch_geometric.data import HeteroData, Data
 import wandb
+import pandas as pd
+from relbench.base.table import Table
 
 WANDB=True
 CROSSVAL = False
+COMBINED=False
+
+def combine_tables(table1, table2):
+    # Step 1: Extract DataFrames
+    df1 = table1.df
+    df2 = table2.df
+    
+    # Step 2: Combine the DataFrames
+    combined_df = pd.concat([df1, df2], ignore_index=True)
+    
+    # Step 3: Use metadata from one of the tables (assuming they are the same)
+    fkey_col_to_pkey_table = table1.fkey_col_to_pkey_table
+    pkey_col = table1.pkey_col
+    time_col = table1.time_col
+    
+    # Step 4: Create a new Table instance with the combined data
+    combined_table = Table(
+        df=combined_df,
+        fkey_col_to_pkey_table=fkey_col_to_pkey_table,
+        pkey_col=pkey_col,
+        time_col=time_col
+    )
+    
+    return combined_table
 
 class transform_LAP():
     def __init__(self, instance=None, PE1=True):
@@ -142,6 +168,7 @@ parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--gpu_id", type=int, default=2)
 parser.add_argument("--name", type=str, default="RPE")
+parser.add_argument("--path", type=str, default=None)
 parser.add_argument(
     "--cache_dir",
     type=str,
@@ -163,7 +190,7 @@ cfg = merge_config(args.cfg)
 
 #new_name = 'k=' + str(args.k) + '_' + str(args.n_phi_layers) + ':' + str(args.hidden_phi_layers) + ',' + str(args.pe_dims)
 if WANDB:
-    run = wandb.init(config=cfg, project='Relbench-HM', name=args.name)
+    run = wandb.init(config=cfg, project='Relbench', name=args.name)
 
 device = torch.device(f'cuda:{args.gpu_id}')
 #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -221,8 +248,45 @@ else:
     raise ValueError(f"Task type {task.task_type} is unsupported")
 
 
-if CROSSVAL:
-    loader_dict=None
+if COMBINED:
+    loader_dict: Dict[str, NeighborLoader] = {}
+    table1 = task.get_table('train')
+    table2 = task.get_table('val')
+    table = combine_tables(table1, table2)
+    table_input = get_node_train_table_input(table=table, task=task)
+    entity_table = table_input.nodes[0]
+    transform2 = T.Compose([table_input.transform, transform_LAP(PE1=cfg.PE1)])
+    loader_dict['train'] = NeighborLoader(
+        data,
+        num_neighbors=[int(args.num_neighbors / 2**i) for i in range(args.num_layers)],
+        time_attr="time",
+        input_nodes=table_input.nodes,
+        input_time=table_input.time,
+        transform=transform2,
+        batch_size=args.batch_size,
+        temporal_strategy=args.temporal_strategy,
+        shuffle=True,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0
+    )
+    for split in ['test']:
+        table = task.get_table(split)
+        table_input = get_node_train_table_input(table=table, task=task)
+        entity_table = table_input.nodes[0]
+        transform2 = transform_LAP(PE1=cfg.PE1)
+        loader_dict[split] = NeighborLoader(
+            data,
+            num_neighbors=[int(args.num_neighbors / 2**i) for i in range(args.num_layers)],
+            time_attr="time",
+            input_nodes=table_input.nodes,
+            input_time=table_input.time,
+            transform=transform2,
+            batch_size=args.batch_size,
+            temporal_strategy=args.temporal_strategy,
+            shuffle=split == "train",
+            num_workers=args.num_workers,
+            persistent_workers=args.num_workers > 0
+        )
 else:
     loader_dict: Dict[str, NeighborLoader] = {}
     for split in ["train", 'val', "test"]:
@@ -279,8 +343,8 @@ def train(PE1, loader_dict, print_embs=False) -> float:
 
     loss_accum = count_accum = 0
     steps = 0
-    total_steps = min(len(loader_dict["train"]), args.max_steps_per_epoch)
-    for batch in tqdm(loader_dict["train"], total=total_steps):
+    total_steps = min(len(loader_dict['train']), args.max_steps_per_epoch)
+    for batch in tqdm(loader_dict['train'], total=total_steps):
         batch = batch.to(device)
         W_list = []
         '''if not PE1:
@@ -310,6 +374,9 @@ def train(PE1, loader_dict, print_embs=False) -> float:
 
         loss_accum += loss.detach().item() * pred.size(0)
         count_accum += pred.size(0)
+
+        del batch, loss
+        torch.cuda.empty_cache()
 
         steps += 1
         if steps > args.max_steps_per_epoch:
@@ -414,6 +481,48 @@ if CROSSVAL:
             #wandb.log({"Train loss": train_loss, 'average precision': val_metrics['average_precision'], 'accuracy':  val_metrics['accuracy'], 'roc_auc': val_metrics['roc_auc']})
         ave_val += val_metrics['roc_auc']
     wandb.summary['CV_val'] = ave_val/9
+elif COMBINED:
+    model = Model_PEARL(
+        data=data,
+        col_stats_dict=col_stats_dict,
+        num_layers=args.num_layers,
+        channels=args.channels,
+        out_channels=out_channels,
+        aggr=args.aggr,
+        norm="batch_norm",
+        cfg=cfg,
+        PE1=cfg.PE1,
+        device=device
+    ).to(device)
+    if args.path is not None:
+        model.load_state_dict(torch.load(args.path))
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    state_dict = None
+    best_val_metric = -math.inf if higher_is_better else math.inf
+    for epoch in range(1, args.epochs + 1):
+        train_loss = train(cfg.PE1, loader_dict)
+        #val_pred = test(cfg.PE1, loader_dict["val"])
+        test_pred = test(cfg.PE1, loader_dict["test"])
+        test_metrics = task.evaluate(test_pred)
+        print(test_metrics)
+        val_metrics = {}
+        # {'average_precision': 0.8310726424602248, 'accuracy': 0.7791519434628975, 'f1': 0.8758689175769613, 'roc_auc': 0.5933242630385488}
+        #print(f"Epoch: {epoch:02d}, Train loss: {train_loss})#, Val metrics: {val_metrics}")
+        val_metrics['Train loss'] = train_loss
+        if task.task_type == TaskType.REGRESSION:
+            val_metrics["test_mae"] = test_metrics['mae']
+        else:
+            val_metrics['test_auroc']=test_metrics['roc_auc']
+        if WANDB:
+            wandb.log(val_metrics)
+        #wandb.log({"Train loss": train_loss, 'average precision': val_metrics['average_precision'], 'accuracy':  val_metrics['accuracy'], 'roc_auc': val_metrics['roc_auc']})
+
+        if not COMBINED:
+            if (higher_is_better and val_metrics[tune_metric] >= best_val_metric) or (
+                not higher_is_better and val_metrics[tune_metric] <= best_val_metric
+            ):
+                best_val_metric = val_metrics[tune_metric]
+                state_dict = copy.deepcopy(model.state_dict())
 else:
     model = Model_PEARL(
         data=data,
@@ -443,8 +552,10 @@ else:
         # {'average_precision': 0.8310726424602248, 'accuracy': 0.7791519434628975, 'f1': 0.8758689175769613, 'roc_auc': 0.5933242630385488}
         #print(f"Epoch: {epoch:02d}, Train loss: {train_loss})#, Val metrics: {val_metrics}")
         val_metrics['Train loss'] = train_loss
-        val_metrics["test_mae"] = test_metrics['mae']
-        #val_metrics['test_auroc']=test_metrics['roc_auc']
+        if task.task_type == TaskType.REGRESSION:
+            val_metrics["test_mae"] = test_metrics['mae']
+        else:
+            val_metrics['test_auroc']=test_metrics['roc_auc']
         if WANDB:
             wandb.log(val_metrics)
         #wandb.log({"Train loss": train_loss, 'average precision': val_metrics['average_precision'], 'accuracy':  val_metrics['accuracy'], 'roc_auc': val_metrics['roc_auc']})
@@ -455,6 +566,11 @@ else:
             best_val_metric = val_metrics[tune_metric]
             state_dict = copy.deepcopy(model.state_dict())
 
+
+if not COMBINED:
+    print("SAVED")
+    path_name = "./" + args.name + '.pth'
+    torch.save(state_dict, path_name)
 
 model.load_state_dict(state_dict)
 

@@ -6,7 +6,7 @@ from yacs.config import CfgNode as CN
 cfg = CN()
 
 cfg.n_mlp_layers = 2
-cfg.mlp_hidden_dims = 100
+cfg.mlp_hidden_dims = 37
 cfg.mlp_use_bn = True
 cfg.mlp_activation = 'relu'
 cfg.mlp_dropout_prob = 0
