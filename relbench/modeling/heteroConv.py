@@ -11,6 +11,7 @@ from torch_geometric.utils.hetero import check_add_self_loops
 from relbench.modeling.mlp import MLP
 from typing import Callable
 from relbench.modeling.pe import GINPhi
+from relbench.modeling.mlp import MLP as MLP2
 
 def group(xs: List[Tensor], aggr: Optional[str]) -> Optional[Tensor]:
     if len(xs) == 0:
@@ -67,9 +68,12 @@ class HeteroConv(torch.nn.Module):
         convs: Dict[EdgeType, MessagePassing],
         aggr: Optional[str] = "sum",
         create_mlp: Callable[[int, int], MLP]=None,
-        pe_emb=37
+        pe_emb=40,
+        cfg=None
     ):
         super().__init__()
+
+        self.cfg = cfg
 
         for edge_type, module in convs.items():
             check_add_self_loops(module, [edge_type])
@@ -87,19 +91,26 @@ class HeteroConv(torch.nn.Module):
         self.aggr = aggr
         self.MP = GINPhi(1, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
                                 self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False, pooling=True)
-        self.pe_embedding = create_mlp(pe_emb, 128)  ## REPLACE W VAR
+        self.pe_embedding = self.create_mlp(pe_emb, 128)  ## REPLACE W VAR
 
     def reset_parameters(self):
         r"""Resets all learnable parameters of the module."""
         for conv in self.convs.values():
             conv.reset_parameters()
+    
+    def create_mlp(self, in_dims: int, out_dims: int, use_bias=None) -> MLP:
+        print(in_dims)
+        return MLP2(
+            self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
+            self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
+         )
 
     def forward(
         self,
         *args_dict,
         PE=None,
         reverse_node_mapping=None,
-        edge_index=None #homogenous edge index tensor
+        edge_index=None, #homogenous edge index tensor
         **kwargs_dict
     ) -> Dict[NodeType, Tensor]:
         r"""Runs the forward pass of the module.
@@ -124,7 +135,8 @@ class HeteroConv(torch.nn.Module):
                 :obj:`edge_attr_dict = { edge_type: edge_attr }`.
         """
         reverse_node_mapping = reverse_node_mapping
-        PE = self.phi(PE, edge_index, self.BASIS, running_sum=False, final=False)
+        new_list = [PE]
+        PE = self.MP(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=False)
         for homogeneous_idx, pos_encoding in enumerate(self.pe_embedding(PE)):
             node_type, node_idx = reverse_node_mapping[homogeneous_idx]
             args_dict[0][node_type][node_idx] = args_dict[0][node_type][node_idx] + pos_encoding

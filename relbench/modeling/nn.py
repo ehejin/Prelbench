@@ -362,6 +362,7 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
                     for edge_type in edge_types
                 },
                 aggr="sum",
+                cfg=cfg
             )
             self.convs.append(conv)
 
@@ -385,6 +386,6 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         for _, (conv, norm_dict) in enumerate(zip(self.convs, self.norms)):
             x_dict = conv(x_dict, edge_index_dict, PE=PE, reverse_node_mapping=reverse_mapping, edge_index=edge_index)
             x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
-            x_dict = {key: x.relu() for key, x in x_dict.items()}
+            x_dict = {key: x.detach().relu() for key, x in x_dict.items()}
 
         return x_dict

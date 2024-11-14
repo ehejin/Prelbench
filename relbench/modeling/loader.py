@@ -195,8 +195,11 @@ class LinkNeighborLoader(DataLoader):
         subgraph_type: Union[SubgraphType, str] = "directional",
         temporal_strategy: str = "uniform",
         time_attr: Optional[str] = None,
+        transform=None,
         **kwargs,
     ):
+        self.transform = transform
+
         node_sampler = NeighborSampler(
             data,
             num_neighbors=num_neighbors,
@@ -204,7 +207,7 @@ class LinkNeighborLoader(DataLoader):
             disjoint=True,
             temporal_strategy=temporal_strategy,
             time_attr=time_attr,
-            share_memory=kwargs.get("num_workers", 0) > 0,
+            share_memory=kwargs.get("num_workers", 0) > 0
         )
 
         self.data = data
@@ -282,5 +285,10 @@ class LinkNeighborLoader(DataLoader):
                 input_type=self.dst_node_type,
             )
         )
+
+        if self.transform:
+            src_out = self.transform(src_out)
+            pos_dst_out = self.transform(pos_dst_out)
+            neg_dst_out = self.transform(neg_dst_out)
 
         return src_out, pos_dst_out, neg_dst_out

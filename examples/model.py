@@ -448,7 +448,8 @@ class PEARL_LINK(Model):
         norm: str,
         shallow_list: List[NodeType] = [],
         id_awareness: bool = False,
-        cfg=None
+        cfg=None,
+        device=None
     ):
         super().__init__(
             data=data,
@@ -471,19 +472,30 @@ class PEARL_LINK(Model):
             cfg=cfg
         )
 
+        self.device = device
+
+        self.cfg = cfg
+
         Phi = GINPhi(self.cfg.n_phi_layers, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
                                 self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False)
                     
         self.positional_encoding = K_PEARL_PE(Phi, cfg.BASIS, k=cfg.RAND_k, mlp_nlayers=cfg.RAND_mlp_nlayers, 
                             mlp_hid=cfg.RAND_mlp_hid, spe_act=cfg.RAND_act, mlp_out=cfg.RAND_mlp_out)
 
-        #self.pe_embedding = torch.nn.Linear(self.positional_encoding.out_dims, self.cfg.node_emb_dims)
+        self.num_samples = cfg.num_samples
 
+        #self.pe_embedding = torch.nn.Linear(self.positional_encoding.out_dims, self.cfg.node_emb_dims)
+    
+    def create_mlp(self, in_dims: int, out_dims: int, use_bias=None) -> MLP:
+        print(in_dims)
+        return MLP2(
+            self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
+            self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
+         )
     def forward(
         self,
         batch: HeteroData,
-        entity_table: NodeType,
-        extra_features: Tensor,
+        entity_table: NodeType
     ) -> Tensor:
         seed_time = batch[entity_table].seed_time
         for k in range(20):
@@ -516,8 +528,6 @@ class PEARL_LINK(Model):
         x_dict = self.gnn(
             x_dict, 
             batch.edge_index_dict,
-            batch.num_sampled_nodes_dict,
-            batch.num_sampled_edges_dict,
             PE, 
             batch.reverse_node_mapping,
             batch.edge_index

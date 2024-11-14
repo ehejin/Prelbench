@@ -20,11 +20,15 @@ from tqdm import tqdm
 
 from relbench.base import Dataset, RecommendationTask, TaskType
 from relbench.datasets import get_dataset
+from torch_geometric.data import Data
+from torch_geometric.utils import get_laplacian, to_dense_adj
+
 from relbench.modeling.graph import get_link_train_table_input, make_pkey_fkey_graph
 from relbench.modeling.loader import LinkNeighborLoader
 from relbench.modeling.utils import get_stype_proposal
 from relbench.tasks import get_task
 import wandb
+from examples.config import merge_config
 
 class transform_LAP():
     def __init__(self, instance=None, PE1=True):
@@ -91,6 +95,7 @@ parser.add_argument("--max_steps_per_epoch", type=int, default=2000)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--wandb", type=bool, default=False)
+parser.add_argument("--name", type=str, default=None)
 parser.add_argument("--gpu_id", type=int, default=2)
 parser.add_argument("--cfg", type=str, default=None, help="Path to PEARL cfg file")
 parser.add_argument(
@@ -107,7 +112,7 @@ if torch.cuda.is_available():
 seed_everything(args.seed)
 
 if args.wandb:
-    run = wandb.init(config=cfg, project='Relbench', name=args.name)
+    run = wandb.init(config=cfg, project='Relbench-LINK', name=args.name)
 
 dataset: Dataset = get_dataset(args.dataset, download=True)
 task: RecommendationTask = get_task(args.dataset, args.task, download=True)
@@ -287,10 +292,15 @@ for epoch in range(1, args.epochs + 1):
     if epoch % args.eval_epochs_interval == 0:
         val_pred = test(*eval_loaders_dict["val"])
         val_metrics = task.evaluate(val_pred, task.get_table("val"))
+        test_pred = test(*eval_loaders_dict["test"])
+        test_metrics = task.evaluate(test_pred)
         print(
-            f"Epoch: {epoch:02d}, Train loss: {train_loss}, "
-            f"Val metrics: {val_metrics}"s
+            f"Epoch: {epoch:02d}, Train loss: {train_loss}, ",
+            f"Val metrics: {val_metrics}"
         )
+        val_metrics['Train loss'] = train_loss
+        val_metrics['test_MAP'] = test_metrics['link_prediction_map']
+        wandb.log(val_metrics)
 
         if val_metrics[tune_metric] >= best_val_metric:
             best_val_metric = val_metrics[tune_metric]

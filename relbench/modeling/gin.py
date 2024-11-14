@@ -27,7 +27,8 @@ class GIN(nn.Module):
             in_dims = hidden_dims
             if bn:
                 self.batch_norms.append(nn.BatchNorm1d(hidden_dims))
-        layer = GINLayer(create_mlp(hidden_dims, out_dims))
+        new_m = create_mlp(hidden_dims, out_dims)
+        layer = GINLayer(new_m)
         self.layers.append(layer)
         self.laplacian=laplacian
         print("GINPHI LAP is: ", laplacian)

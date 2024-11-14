@@ -18,7 +18,7 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.seed import seed_everything
 from tqdm import tqdm
 
-from relbench.base import Dataset, RecommendationTask, TaskType
+from relbench.base import Dataset, RecommendationTask, TaskType, Data
 from relbench.datasets import get_dataset
 from relbench.modeling.graph import get_link_train_table_input, make_pkey_fkey_graph
 from relbench.modeling.loader import LinkNeighborLoader
