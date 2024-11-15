@@ -530,7 +530,8 @@ class PEARL_LINK(Model):
             batch.edge_index_dict,
             PE, 
             batch.reverse_node_mapping,
-            batch.edge_index
+            batch.edge_index,
+            batch
         )
 
         return self.head(x_dict[entity_table][: seed_time.size(0)])
