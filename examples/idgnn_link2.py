@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from examples.model import MODEL_LINK
+from examples.model import MODEL_LINK, Model_PEARL
 from examples.text_embedder import GloveTextEmbedding
 from torch import Tensor
 from torch_frame import stype
@@ -100,6 +100,7 @@ args = parser.parse_args()
 
 
 device = torch.device(f'cuda:{args.gpu_id}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)
@@ -107,7 +108,7 @@ seed_everything(args.seed)
 cfg = merge_config(args.cfg)
 
 if args.wandb:
-    run = wandb.init(project='Relbench-LINK', name=args.name)
+    run = wandb.init(config=cfg, project='Relbench-LINK', name=args.name)
 
 dataset: Dataset = get_dataset(args.dataset, download=True)
 task: RecommendationTask = get_task(args.dataset, args.task, download=True)
@@ -160,7 +161,22 @@ for split in ["train", "val", "test"]:
         transform=transform
     )
 
-model = MODEL_LINK(
+model = Model_PEARL(
+    data=data,
+    col_stats_dict=col_stats_dict,
+    num_layers=args.num_layers,
+    channels=args.channels,
+    out_channels=1,
+    aggr=args.aggr,
+    norm="layer_norm",
+    id_awareness=True,
+    cfg=cfg,
+    device=device,
+    PE1=False,
+    REL=False
+).to(device)
+
+'''model = MODEL_LINK(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
@@ -171,7 +187,7 @@ model = MODEL_LINK(
     id_awareness=True,
     cfg=cfg,
     device=device
-).to(device)
+).to(device)'''
 
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 train_sparse_tensor = SparseTensor(dst_nodes_dict["train"][1], device=device)

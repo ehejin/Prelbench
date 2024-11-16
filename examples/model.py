@@ -310,15 +310,15 @@ class Model_PEARL(torch.nn.Module):
                 tensor_list = [PE_dict[node_type].get(i, torch.zeros_like(pos_encoding)) for i in range(max_index + 1)]
                 PE_dict[node_type] = torch.stack(tensor_list)
         else:
-            for k in range(20):
+            for k in range(5):
                 W_list = []
                 for i in range(len(batch.Lap)):
                     if self.cfg.BASIS:
                         W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
                     else:
-                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//20).to(self.device) #BxNxM
+                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
                     W_list.append(W)
-                if k < 19:
+                if k < 4:
                     with torch.no_grad():
                         self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
                 else:
@@ -411,7 +411,38 @@ class Model_PEARL(torch.nn.Module):
                 "id_awareness must be set True to use forward_dst_readout"
             )
         seed_time = batch[entity_table].seed_time
-        x_dict = self.encoder(batch.tf_dict)
+        for k in range(5):
+            W_list = []
+            for i in range(len(batch.Lap)):
+                if self.cfg.BASIS:
+                    W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
+                else:
+                    W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
+                W_list.append(W)
+            if k < 4:
+                with torch.no_grad():
+                    self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
+            else:
+                PE = self.positional_encoding(batch.Lap, W_list, batch.edge_index, final=True)
+            del W_list, W
+            torch.cuda.empty_cache()
+        reverse_node_mapping = batch.reverse_node_mapping
+        #PE = self.pe_embedding(PE)
+        PE_dict = {}
+        last_node_idx = -1
+        for homogeneous_idx, pos_encoding in enumerate(self.pe_embedding(PE)): # try with PE embedding
+            node_type, node_idx = reverse_node_mapping[homogeneous_idx]
+            if node_type not in PE_dict:
+                last_node_idx = -1
+                #print(node_type)
+                PE_dict[node_type] = pos_encoding.unsqueeze(dim=0)
+            else:
+                PE_dict[node_type] = torch.cat((PE_dict[node_type], pos_encoding.unsqueeze(dim=0)), dim=0)
+            if node_idx != last_node_idx +1 :
+                print("WRONG")
+                print(node_idx)
+            last_node_idx = node_idx
+        x_dict = self.encoder(batch.tf_dict, PE_dict)
         # Add ID-awareness to the root node
         x_dict[entity_table][: seed_time.size(0)] += self.id_awareness_emb.weight
 
@@ -431,6 +462,7 @@ class Model_PEARL(torch.nn.Module):
         )
 
         return self.head(x_dict[dst_table])
+    
     
 
 

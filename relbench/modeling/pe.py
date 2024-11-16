@@ -179,9 +179,10 @@ class GINPhi(nn.Module):
     gin: GIN
 
     def __init__(
-        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool, RAND_LAP, pooling=False
+        self, n_layers: int, in_dims: int, hidden_dims: int, out_dims: int, create_mlp: Callable[[int, int], MLP], bn: bool, RAND_LAP, pooling=True
     ) -> None:
         super().__init__()
+        print('pooling is,', pooling)
         self.gin = GIN(n_layers, in_dims, hidden_dims, out_dims, create_mlp, bn, laplacian=RAND_LAP)
         #self.mlp = create_mlp(out_dims, out_dims, use_bias=True)
         self.running_sum = 0
@@ -209,8 +210,8 @@ class GINPhi(nn.Module):
                 if final:
                     PE = self.running_sum
                     self.running_sum = 0
-                if self.pooling:
-                    PE = (PE).sum(dim=1)
+                #if self.pooling:
+                #    PE = (PE).sum(dim=1)
             return PE               # [N_sum, D_pe]
         else:
             n_max = max(W.size(0) for W in W_list)
