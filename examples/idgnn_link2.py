@@ -90,14 +90,16 @@ parser.add_argument("--max_steps_per_epoch", type=int, default=2000)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--wandb", type=bool, default=False)
+parser.add_argument('--name', type=str, default=None)
 parser.add_argument("--cfg", type=str, default=None, help="Path to PEARL cfg file")
+parser.add_argument('--gpu_id', type=int, default=0)
 parser.add_argument(
     "--cache_dir", type=str, default=os.path.expanduser("~/.cache/relbench_examples")
 )
 args = parser.parse_args()
 
 
-device = torch.device(f'cuda:{0}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f'cuda:{args.gpu_id}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)
@@ -105,7 +107,7 @@ seed_everything(args.seed)
 cfg = merge_config(args.cfg)
 
 if args.wandb:
-    run = wandb.init(project='Relbench-LINK', name='OG')
+    run = wandb.init(project='Relbench-LINK', name=args.name)
 
 dataset: Dataset = get_dataset(args.dataset, download=True)
 task: RecommendationTask = get_task(args.dataset, args.task, download=True)
