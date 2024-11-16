@@ -9,8 +9,8 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from model import Model
-from text_embedder import GloveTextEmbedding
+from examples.model import Model
+from examples.text_embedder import GloveTextEmbedding
 from torch import Tensor
 from torch_frame import stype
 from torch_frame.config.text_embedder import TextEmbedderConfig
@@ -18,7 +18,7 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.seed import seed_everything
 from tqdm import tqdm
 
-from relbench.base import Dataset, RecommendationTask, TaskType, Data
+from relbench.base import Dataset, RecommendationTask, TaskType
 from relbench.datasets import get_dataset
 from relbench.modeling.graph import get_link_train_table_input, make_pkey_fkey_graph
 from relbench.modeling.loader import LinkNeighborLoader
@@ -55,7 +55,8 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f'cuda:{7}')
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)

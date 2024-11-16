@@ -10,17 +10,17 @@ cfg.mlp_hidden_dims = 40
 cfg.mlp_use_bn = True
 cfg.mlp_activation = 'relu'
 cfg.mlp_dropout_prob = 0
-cfg.n_phi_layers = 4
+cfg.n_phi_layers = 2
 cfg.hidden_phi_layers = 40
 cfg.pe_dims = 40
 cfg.BASIS = False
 cfg.RAND_k = 1
 cfg.RAND_mlp_nlayers = 1
-cfg.RAND_mlp_hid = 128
+cfg.RAND_mlp_hid = 40
 cfg.RAND_act = 'relu'
-cfg.RAND_mlp_out = 128
+cfg.RAND_mlp_out = 40
 cfg.node_emb_dims = 128
-cfg.num_samples = 100
+cfg.num_samples = 50
 cfg.PE1 = False
 
 

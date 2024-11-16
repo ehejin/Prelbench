@@ -337,56 +337,6 @@ class HeteroGraphSAGE_PEARL(torch.nn.Module):
         return x_dict
 
 
-def build_edge_attr_dictFAST(PE, reverse_node_mapping, hetero_data):
-    """
-    Build the edge_attr_dict using the learned positional encodings with vectorized operations.
-
-    Args:
-        PE (torch.Tensor): Learned positional encodings of shape (N, N, K).
-        reverse_node_mapping (dict): Mapping from homogeneous index to (node_type, node_idx).
-        hetero_data (HeteroData): The heterogeneous graph data object.
-
-    Returns:
-        edge_attr_dict (dict): Dictionary of edge attributes for each edge type.
-    """
-    # Convert the reverse_node_mapping dictionary into two tensors
-    num_nodes = len(reverse_node_mapping)
-    node_type_tensor = torch.empty(num_nodes, dtype=torch.long)
-    node_idx_tensor = torch.empty(num_nodes, dtype=torch.long)
-
-    for hom_idx, (node_type, node_idx) in reverse_node_mapping.items():
-        node_type_tensor[hom_idx] = node_type
-        node_idx_tensor[hom_idx] = node_idx
-
-    edge_attr_dict = {}
-
-    # Iterate over each edge type in the heterogeneous graph
-    for edge_type, edge_index in hetero_data.edge_index_dict.items():
-        src_list, dst_list = edge_index
-
-        # Map homogeneous indices to heterogeneous node types and indices
-        src_node_types = node_type_tensor[src_list]
-        dst_node_types = node_type_tensor[dst_list]
-        src_node_indices = node_idx_tensor[src_list]
-        dst_node_indices = node_idx_tensor[dst_list]
-
-        # Filter edges that match the current edge type
-        valid_edges_mask = (src_node_types == edge_type[0]) & (dst_node_types == edge_type[2])
-        valid_src = src_list[valid_edges_mask]
-        valid_dst = dst_list[valid_edges_mask]
-
-        if valid_src.numel() == 0:
-            # If no valid edges, skip this edge type
-            edge_attr_dict[edge_type] = None
-            continue
-
-        # Efficiently extract positional encodings using the valid indices
-        edge_attr = PE[valid_src, valid_dst, :]  # Shape: [num_valid_edges, K]
-        edge_attr_dict[edge_type] = edge_attr
-
-    return edge_attr_dict
-
-
 def build_edge_attr_dict(PE, reverse_node_mapping, hetero_data):
     """
     Build the edge_attr_dict using the learned positional encodings.
@@ -451,12 +401,12 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         for _ in range(num_layers):
             convs = HeteroConv(
                 {
-                    edge_type: GINEConv((channels, channels), channels, aggr=aggr)
+                    edge_type: SAGEConv((channels, channels), channels, aggr=aggr)
                     for edge_type in edge_types
                 },
                 aggr="sum"
             )
-            self.convs.append(conv)
+            self.convs.append(convs)
         
         self.phi = torch.nn.ModuleList()
         self.pe_embedding = torch.nn.ModuleList()
@@ -464,7 +414,7 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         for _ in range(num_layers):
             new_phi = GINPhi(1, self.cfg.RAND_mlp_out, self.cfg.hidden_phi_layers, self.cfg.pe_dims, 
                                 self.create_mlp, self.cfg.mlp_use_bn, RAND_LAP=False, pooling=True)
-            new_emb = self.create_mlp(self.cfg.pe_dims, 128)
+            new_emb = torch.nn.Linear(self.cfg.pe_dims+128, 128) #self.create_mlp(self.cfg.pe_dims+128, 128)
             self.phi.append(new_phi)
             self.pe_embedding.append(new_emb)
 
@@ -478,7 +428,6 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         self.MP.reset_parameters()
 
     def create_mlp(self, in_dims: int, out_dims: int, use_bias=None):
-        print(in_dims)
         return MLP2(
             self.cfg.n_mlp_layers, in_dims, self.cfg.mlp_hidden_dims, out_dims, self.cfg.mlp_use_bn,
             self.cfg.mlp_activation, self.cfg.mlp_dropout_prob
@@ -499,15 +448,13 @@ class HeteroGraphSAGE_LINK(HeteroGraphSAGE):
         for _, (conv, norm_dict, phi, pe_embedding) in enumerate(zip(self.convs, self.norms, self.phi, self.pe_embedding)):
             #x_dict = conv(x_dict, edge_index_dict, PE=PE, reverse_node_mapping=reverse_mapping, edge_index=edge_index)
             PE = phi(new_list, edge_index, self.cfg.BASIS, running_sum=False, final=False) 
-            PE = pe_embedding(PE)
-            edge_attr_dict = build_edge_attr_dict(PE, reverse_node_mapping, hetero_data)
-            
-            '''for homogeneous_idx, pos_encoding in enumerate(self.pe_embedding(PE)):
-                edge_attr_dict[edge_type] = pos_encoding
-                node_type, node_idx = reverse_node_mapping[homogeneous_idx]
-                args_dict[0][node_type][node_idx] = args_dict[0][node_type][node_idx] + pos_encoding'''
+            #PE = pe_embedding(PE)
 
-            x_dict = conv(x_dict, edge_index_dict, edge_attr_dict=edge_attr_dict)
+            for homogeneous_idx, pos_encoding in enumerate(PE):
+                node_type, node_idx = reverse_node_mapping[homogeneous_idx]
+                x_dict[node_type][node_idx] = pe_embedding(torch.cat((x_dict[node_type][node_idx], pos_encoding), dim=-1))
+
+            x_dict = conv(x_dict, edge_index_dict)
             x_dict = {key: norm_dict[key](x) for key, x in x_dict.items()}
             x_dict = {key: x.detach().relu() for key, x in x_dict.items()}
 

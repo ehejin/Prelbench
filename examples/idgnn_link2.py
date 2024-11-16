@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from examples.model import Model
+from examples.model import MODEL_LINK
 from examples.text_embedder import GloveTextEmbedding
 from torch import Tensor
 from torch_frame import stype
@@ -25,9 +25,54 @@ from relbench.modeling.graph import get_link_train_table_input, make_pkey_fkey_g
 from relbench.modeling.loader import SparseTensor
 from relbench.modeling.utils import get_stype_proposal
 from relbench.tasks import get_task
+
+from torch_geometric.utils import get_laplacian, to_dense_adj
+from torch_geometric.data import HeteroData, Data
+
+from examples.config import merge_config
+
 import wandb
 
+class transform_LAP():
+    def __init__(self, instance=None, PE1=True):
+        self.instance = None
+        self.PE1 = PE1
+    def __call__(self, hetero_data):
+        node_mapping = {}  # Keep track of node indices from each type
+        start_idx = 0
+        total_num_nodes = 0
+        reverse_node_mapping = {} 
+        for node_type in hetero_data.node_types:
+            node_data = hetero_data[node_type]
+            num_nodes = node_data['n_id'].size(0)
+            node_mapping[node_type] = torch.arange(start_idx, start_idx + num_nodes)
+            for i in range(num_nodes):
+                reverse_node_mapping[start_idx + i] = (node_type, i)
+            start_idx += num_nodes
+            total_num_nodes += num_nodes
+        all_edges = []
 
+        for edge_type in hetero_data.edge_types:
+            src_type, relation_type, dst_type = edge_type
+            edge_index = hetero_data[edge_type].edge_index
+            src_nodes = node_mapping[src_type][edge_index[0]]
+            dst_nodes = node_mapping[dst_type][edge_index[1]]
+            all_edges.append(torch.stack([src_nodes, dst_nodes], dim=0))
+        if len(all_edges) > 0:
+            all_edges = torch.cat(all_edges, dim=1)
+        homogeneous_data = Data(num_nodes=total_num_nodes, edge_index=all_edges)
+        edge_index = homogeneous_data.edge_index
+
+        if not self.PE1:
+            edge_index, edge_weight = get_laplacian(homogeneous_data.edge_index, normalization='sym')
+            laplacian = to_dense_adj(edge_index, edge_attr=edge_weight)
+            hetero_data.Lap = laplacian
+
+        hetero_data.edge_index = edge_index
+        hetero_data.num_nodes = total_num_nodes
+        hetero_data.reverse_node_mapping = reverse_node_mapping
+
+        return hetero_data
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="rel-hm")
@@ -44,18 +89,23 @@ parser.add_argument("--temporal_strategy", type=str, default="last")
 parser.add_argument("--max_steps_per_epoch", type=int, default=2000)
 parser.add_argument("--num_workers", type=int, default=0)
 parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--wandb", type=bool, default=False)
+parser.add_argument("--cfg", type=str, default=None, help="Path to PEARL cfg file")
 parser.add_argument(
     "--cache_dir", type=str, default=os.path.expanduser("~/.cache/relbench_examples")
 )
 args = parser.parse_args()
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(f'cuda:{0}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if torch.cuda.is_available():
     torch.set_num_threads(1)
 seed_everything(args.seed)
 
-run = wandb.init(project='Relbench-LINK', name='OG')
+cfg = merge_config(args.cfg)
+
+if args.wandb:
+    run = wandb.init(project='Relbench-LINK', name='OG')
 
 dataset: Dataset = get_dataset(args.dataset, download=True)
 task: RecommendationTask = get_task(args.dataset, args.task, download=True)
@@ -92,6 +142,7 @@ for split in ["train", "val", "test"]:
     table = task.get_table(split)
     table_input = get_link_train_table_input(table, task)
     dst_nodes_dict[split] = table_input.dst_nodes
+    transform = transform_LAP(PE1=cfg.PE1)
     loader_dict[split] = NeighborLoader(
         data,
         num_neighbors=num_neighbors,
@@ -104,9 +155,10 @@ for split in ["train", "val", "test"]:
         shuffle=split == "train",
         num_workers=args.num_workers,
         persistent_workers=args.num_workers > 0,
+        transform=transform
     )
 
-model = Model(
+model = MODEL_LINK(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
@@ -115,6 +167,8 @@ model = Model(
     aggr=args.aggr,
     norm="layer_norm",
     id_awareness=True,
+    cfg=cfg,
+    device=device
 ).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
