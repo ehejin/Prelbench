@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from examples.model import MODEL_LINK, Model_PEARL
+from examples.model import MODEL_LINK, Model_PEARL, Model_SIGNNET
 from examples.text_embedder import GloveTextEmbedding
 from torch import Tensor
 from torch_frame import stype
@@ -31,7 +31,25 @@ from torch_geometric.data import HeteroData, Data
 
 from examples.config import merge_config
 
+import scipy.sparse as sp
+from scipy.sparse.linalg import eigsh
 import wandb
+
+
+
+def sparse_evd(laplacian, k=8):
+    # Convert the dense Laplacian to a sparse matrix
+    laplacian_sp = sp.csr_matrix(laplacian.cpu().numpy())
+    
+    # Compute the k smallest eigenvalues and corresponding eigenvectors
+    eigenvalues, eigenvectors = eigsh(laplacian_sp, k=k, which='SM', maxiter=1000000)
+    
+    # Convert back to torch tensors
+    eigenvalues = torch.from_numpy(eigenvalues)
+    eigenvectors = torch.from_numpy(eigenvectors)
+    
+    return eigenvalues, eigenvectors
+
 
 class transform_LAP():
     def __init__(self, instance=None, PE1=True):
@@ -74,11 +92,76 @@ class transform_LAP():
 
         return hetero_data
 
+
+
+class transform_LAP_SIGN():
+    def __init__(self, instance=None, PE1=True, pe_dims=8):
+        self.instance = instance
+        self.PE1 = PE1
+        self.pe_dims = pe_dims  # Number of smallest eigenvectors to extract
+
+    def __call__(self, hetero_data):
+        node_mapping = {}  # Keep track of node indices from each type
+        reverse_node_mapping = {} 
+        start_idx = 0
+        total_num_nodes = 0
+        
+        # Map heterogeneous nodes to a homogeneous index space
+        for node_type in hetero_data.node_types:
+            node_data = hetero_data[node_type]
+            num_nodes = node_data['n_id'].size(0)
+            node_mapping[node_type] = torch.arange(start_idx, start_idx + num_nodes)
+            for i in range(num_nodes):
+                reverse_node_mapping[start_idx + i] = (node_type, i)
+            start_idx += num_nodes
+            total_num_nodes += num_nodes
+
+        # Collect all edges into a homogeneous graph
+        all_edges = []
+        for edge_type in hetero_data.edge_types:
+            src_type, relation_type, dst_type = edge_type
+            edge_index = hetero_data[edge_type].edge_index
+            src_nodes = node_mapping[src_type][edge_index[0]]
+            dst_nodes = node_mapping[dst_type][edge_index[1]]
+            all_edges.append(torch.stack([src_nodes, dst_nodes], dim=0))
+
+        # Combine all edge indices
+        if len(all_edges) > 0:
+            all_edges = torch.cat(all_edges, dim=1)
+        homogeneous_data = Data(num_nodes=total_num_nodes, edge_index=all_edges)
+
+        edge_index, edge_weight = get_laplacian(homogeneous_data.edge_index, normalization='sym')
+        laplacian = to_dense_adj(edge_index, edge_attr=edge_weight, max_num_nodes=total_num_nodes).squeeze(0)
+        
+        #laplacian += torch.eye(laplacian.size(0)) * 1e-6
+        #print(laplacian.shape)
+
+        # Compute the eigenvalues and eigenvectors
+        eigenvalues, eigenvectors = torch.linalg.eigh(laplacian) #sparse_evd(laplacian, k=self.pe_dims) 
+        
+        # Select the 8 smallest eigenvalues and their corresponding eigenvectors
+        d = min(self.pe_dims, total_num_nodes)
+        smallest_eigenvalues = eigenvalues[:d]
+        smallest_eigenvectors = eigenvectors[:, :d]
+        
+        # Store the Laplacian, eigenvalues, and eigenvectors in hetero_data
+        #hetero_data.Lap = laplacian
+        hetero_data.Lambda = smallest_eigenvalues
+        hetero_data.V = smallest_eigenvectors
+
+        # Update hetero_data with homogeneous graph information
+        hetero_data.edge_index = homogeneous_data.edge_index
+        hetero_data.num_nodes = total_num_nodes
+        hetero_data.reverse_node_mapping = reverse_node_mapping
+
+        return hetero_data
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset", type=str, default="rel-hm")
 parser.add_argument("--task", type=str, default="user-item-purchase")
 parser.add_argument("--lr", type=float, default=0.001)
-parser.add_argument("--epochs", type=int, default=20)
+parser.add_argument("--epochs", type=int, default=10)
 parser.add_argument("--eval_epochs_interval", type=int, default=1)
 parser.add_argument("--batch_size", type=int, default=512)
 parser.add_argument("--channels", type=int, default=128)

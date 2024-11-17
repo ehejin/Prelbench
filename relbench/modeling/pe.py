@@ -133,6 +133,50 @@ class PEARL_PE1(nn.Module):
         return self.rho.out_dims
 
 
+    
+class MaskedSignInvPe(nn.Module):
+    # pe = rho(mask-sum(phi(V)+phi(-V)))
+    def __init__(self, phi: nn.Module, rho: nn.Module) -> None:
+        super(MaskedSignInvPe, self).__init__()
+        self.phi = phi
+        self.rho = rho
+
+    def forward(
+            self, Lambda: torch.Tensor, V: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor
+    ) -> torch.Tensor:
+        x = V.unsqueeze(-1)  # TO DO: incorporate eigenvalues
+        x = self.phi(x, edge_index) + self.phi(-x, edge_index)  # [N, D_pe, hidden_dims]
+        pe_dim, N = x.size(1), x.size(0)
+        num_nodes = [torch.sum(batch == i) for i in range(batch[-1]+1)]
+        a = torch.arange(0, pe_dim).to(x.device)
+        mask = torch.cat([(a < num).unsqueeze(0).repeat([num, 1]) for num in num_nodes], dim=0) # -1 since excluding zero eigenvalue
+        x = (x*mask.unsqueeze(-1)).sum(dim=1) # [N, hidden_dims]
+        x = self.rho(x)  # [N, D_pe]
+        return x
+
+
+class SignInvPe(nn.Module):
+    # pe = rho(phi(V)+phi(-V))
+    def __init__(self, phi: nn.Module, rho: nn.Module) -> None:
+        super(SignInvPe, self).__init__()
+        self.phi = phi
+        self.rho = rho
+
+    def forward(
+            self, Lambda: torch.Tensor, V: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor
+    ) -> torch.Tensor:
+        x = V.unsqueeze(-1) # TO DO: incorporate eigenvalues
+        x = self.phi(x, edge_index) + self.phi(-x, edge_index) # [N, D_pe, hidden_dims]
+        x = x.reshape([x.shape[0], -1]) # [N, D_pe * hidden_dims]
+        x = self.rho(x) # [N, D_pe]
+
+        return x
+
+    @property
+    def out_dims(self) -> int:
+        return self.rho.out_dims
+
+
 
 class MLPPhi(nn.Module):
     gin: GIN
@@ -214,7 +258,7 @@ class GINPhi(nn.Module):
                 #    PE = (PE).sum(dim=1)
             return PE               # [N_sum, D_pe]
         else:
-            n_max = max(W.size(0) for W in W_list)
+            '''n_max = max(W.size(0) for W in W_list)
             W_pad_list = []     # [N_i, N_max, M] * B
             mask = [] # node masking, [N_i, N_max] * B
             for W in W_list:
@@ -225,7 +269,15 @@ class GINPhi(nn.Module):
             W = torch.cat(W_pad_list, dim=0)   # [N_sum, N_max, M]
             mask = torch.cat(mask, dim=0)   # [N_sum, N_max]
             PE = self.gin(W, edge_index, mask=mask)       # [N_sum, N_max, D_pe]
-            PE = (PE * mask.unsqueeze(-1)).sum(dim=1)
+            PE = (PE * mask.unsqueeze(-1)).sum(dim=1)'''
+            W = W_list[0]
+            #mask = torch.ones(W.size(0), W.size(0), device=W.device, dtype=torch.bool)
+            PE = self.gin(W, edge_index)
+            if running_sum:
+                self.running_sum += (PE).sum(dim=1)
+            if final:
+                PE = self.running_sum
+                self.running_sum = 0
             return PE
         # return PE.sum(dim=1)
 

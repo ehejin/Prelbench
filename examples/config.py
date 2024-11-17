@@ -22,6 +22,7 @@ cfg.RAND_mlp_out = 40
 cfg.node_emb_dims = 128
 cfg.num_samples = 80
 cfg.PE1 = False
+cfg.splits = 16
 
 
 def load_config_from_file(config_path):
