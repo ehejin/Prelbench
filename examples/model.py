@@ -310,15 +310,15 @@ class Model_PEARL(torch.nn.Module):
                 tensor_list = [PE_dict[node_type].get(i, torch.zeros_like(pos_encoding)) for i in range(max_index + 1)]
                 PE_dict[node_type] = torch.stack(tensor_list)
         else:
-            for k in range(5):
+            for k in range(10):
                 W_list = []
                 for i in range(len(batch.Lap)):
                     if self.cfg.BASIS:
                         W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
                     else:
-                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
+                        W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//10).to(self.device) #BxNxM
                     W_list.append(W)
-                if k < 4:
+                if k < 9:
                     with torch.no_grad():
                         self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
                 else:
@@ -411,15 +411,15 @@ class Model_PEARL(torch.nn.Module):
                 "id_awareness must be set True to use forward_dst_readout"
             )
         seed_time = batch[entity_table].seed_time
-        for k in range(5):
+        for k in range(10):
             W_list = []
             for i in range(len(batch.Lap)):
                 if self.cfg.BASIS:
                     W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
                 else:
-                    W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
+                    W = 1+torch.randn(batch.Lap[i].shape[0],self.num_samples//10).to(self.device) #BxNxM
                 W_list.append(W)
-            if k < 4:
+            if k < 9:
                 with torch.no_grad():
                     self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
             else:
