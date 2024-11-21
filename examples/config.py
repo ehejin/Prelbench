@@ -14,15 +14,15 @@ cfg.n_phi_layers = 6
 cfg.hidden_phi_layers = 40
 cfg.pe_dims = 40
 cfg.BASIS = False
-cfg.RAND_k = 12
+cfg.RAND_k = 10
 cfg.RAND_mlp_nlayers = 1
 cfg.RAND_mlp_hid = 40
 cfg.RAND_act = 'relu'
 cfg.RAND_mlp_out = 40
 cfg.node_emb_dims = 128
-cfg.num_samples = 80
+cfg.num_samples = 100
 cfg.PE1 = False
-cfg.splits = 16
+cfg.splits = 4
 
 
 def load_config_from_file(config_path):

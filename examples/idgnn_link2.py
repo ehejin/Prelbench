@@ -32,12 +32,13 @@ from torch_geometric.data import HeteroData, Data
 from examples.config import merge_config
 
 import scipy.sparse as sp
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, lobpcg
+from torch_geometric.utils import to_scipy_sparse_matrix
 import wandb
 
 
 
-def sparse_evd(laplacian, k=8):
+def sparse_evd_IDK(laplacian, k=8):
     # Convert the dense Laplacian to a sparse matrix
     laplacian_sp = sp.csr_matrix(laplacian.cpu().numpy())
     
@@ -52,7 +53,7 @@ def sparse_evd(laplacian, k=8):
 
 
 class transform_LAP():
-    def __init__(self, instance=None, PE1=True):
+    def __init__(self, instance=None, PE1=True, device=None):
         self.instance = None
         self.PE1 = PE1
     def __call__(self, hetero_data):
@@ -93,12 +94,33 @@ class transform_LAP():
         return hetero_data
 
 
+def sparse_evd(laplacian, k, device):
+    try: 
+        sparse_laplacian = laplacian  # Create a sparse CSR matrix
 
-class transform_LAP_SIGN():
-    def __init__(self, instance=None, PE1=True, pe_dims=8):
+        # Compute the largest k eigenvalues and eigenvectors
+        eigvals, eigvecs = eigsh(sparse_laplacian, k=k, which='SM', maxiter=5000000)  # 'LM' = Largest Magnitude
+
+        # Convert the results back to PyTorch tensors
+        eigvals = torch.tensor(eigvals, device=device, dtype=torch.float32)
+        eigvecs = torch.tensor(eigvecs, device=device, dtype=torch.float32)
+    except:
+        print("Eigsh failed!!")
+        dense_laplacian = torch.tensor(laplacian.toarray(), device=device, dtype=torch.float32)
+        eigvals, eigvecs = torch.linalg.eigh(dense_laplacian)
+        eigvals = eigvals[-k:]  # Largest eigenvalues
+        eigvecs = eigvecs[:, -k:]
+        #eigvals = eigvals[:k] # SMALLEST
+        #eigvecs = eigvecs[:, :k]
+    
+    return eigvals, eigvecs
+
+class transform_LAP_SIGNNET():
+    def __init__(self, instance=None, PE1=True, pe_dims=8, device=None):
         self.instance = instance
         self.PE1 = PE1
         self.pe_dims = pe_dims  # Number of smallest eigenvectors to extract
+        self.device = device
 
     def __call__(self, hetero_data):
         node_mapping = {}  # Keep track of node indices from each type
@@ -131,18 +153,14 @@ class transform_LAP_SIGN():
         homogeneous_data = Data(num_nodes=total_num_nodes, edge_index=all_edges)
 
         edge_index, edge_weight = get_laplacian(homogeneous_data.edge_index, normalization='sym')
-        laplacian = to_dense_adj(edge_index, edge_attr=edge_weight, max_num_nodes=total_num_nodes).squeeze(0)
+        laplacian_sparse = to_scipy_sparse_matrix(edge_index, edge_weight, num_nodes=total_num_nodes)
+        #laplacian = to_dense_adj(edge_index, edge_attr=edge_weight, max_num_nodes=total_num_nodes).squeeze(0)
         
-        #laplacian += torch.eye(laplacian.size(0)) * 1e-6
-        #print(laplacian.shape)
-
-        # Compute the eigenvalues and eigenvectors
-        eigenvalues, eigenvectors = torch.linalg.eigh(laplacian) #sparse_evd(laplacian, k=self.pe_dims) 
+        eigenvalues, eigenvectors = sparse_evd(laplacian_sparse, k=self.pe_dims, device=self.device) 
         
-        # Select the 8 smallest eigenvalues and their corresponding eigenvectors
-        d = min(self.pe_dims, total_num_nodes)
-        smallest_eigenvalues = eigenvalues[:d]
-        smallest_eigenvectors = eigenvectors[:, :d]
+        #d = min(self.pe_dims, total_num_nodes)
+        smallest_eigenvalues = eigenvalues #eigenvalues[:d]
+        smallest_eigenvectors = eigenvectors #eigenvectors[:, :d]
         
         # Store the Laplacian, eigenvalues, and eigenvectors in hetero_data
         #hetero_data.Lap = laplacian
@@ -228,7 +246,7 @@ for split in ["train", "val", "test"]:
     table = task.get_table(split)
     table_input = get_link_train_table_input(table, task)
     dst_nodes_dict[split] = table_input.dst_nodes
-    transform = transform_LAP(PE1=cfg.PE1)
+    transform = transform_LAP(PE1=cfg.PE1, device=device)
     loader_dict[split] = NeighborLoader(
         data,
         num_neighbors=num_neighbors,
