@@ -10,7 +10,7 @@ cfg.mlp_hidden_dims = 40
 cfg.mlp_use_bn = True
 cfg.mlp_activation = 'relu'
 cfg.mlp_dropout_prob = 0
-cfg.n_phi_layers = 6
+cfg.n_phi_layers = 7
 cfg.hidden_phi_layers = 40
 cfg.pe_dims = 40
 cfg.BASIS = False
@@ -23,6 +23,7 @@ cfg.node_emb_dims = 128
 cfg.num_samples = 100
 cfg.PE1 = False
 cfg.splits = 4
+cfg.smallest = False
 
 
 def load_config_from_file(config_path):

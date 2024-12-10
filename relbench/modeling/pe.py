@@ -18,7 +18,6 @@ from torch_geometric.nn.conv import MessagePassing
 from scipy.special import comb
 import math
 
-
 def filter1(S, W, k):
     # S is laplacian and W is NxN e or NxM x_m
     out = W
@@ -258,20 +257,7 @@ class GINPhi(nn.Module):
                 #    PE = (PE).sum(dim=1)
             return PE               # [N_sum, D_pe]
         else:
-            '''n_max = max(W.size(0) for W in W_list)
-            W_pad_list = []     # [N_i, N_max, M] * B
-            mask = [] # node masking, [N_i, N_max] * B
-            for W in W_list:
-                zeros = torch.zeros(W.size(0), n_max - W.size(1), W.size(2), device=W.device)
-                W_pad = torch.cat([W, zeros], dim=1)   # [N_i, N_max, M]
-                W_pad_list.append(W_pad)
-                mask.append((torch.arange(n_max, device=W.device) < W.size(0)).tile((W.size(0), 1))) # [N_i, N_max]
-            W = torch.cat(W_pad_list, dim=0)   # [N_sum, N_max, M]
-            mask = torch.cat(mask, dim=0)   # [N_sum, N_max]
-            PE = self.gin(W, edge_index, mask=mask)       # [N_sum, N_max, D_pe]
-            PE = (PE * mask.unsqueeze(-1)).sum(dim=1)'''
             W = W_list[0]
-            #mask = torch.ones(W.size(0), W.size(0), device=W.device, dtype=torch.bool)
             PE = self.gin(W, edge_index)
             if running_sum:
                 self.running_sum += (PE).sum(dim=1)
@@ -279,7 +265,6 @@ class GINPhi(nn.Module):
                 PE = self.running_sum
                 self.running_sum = 0
             return PE
-        # return PE.sum(dim=1)
 
     @property
     def out_dims(self) -> int:

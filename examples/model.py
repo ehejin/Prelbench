@@ -678,7 +678,7 @@ class Model_SIGNNET(torch.nn.Module):
         # rho = create_mlp(cfg.pe_dims * cfg.phi_hidden_dims, cfg.pe_dims)
         #rho = MLP2(cfg.n_mlp_layers, self.cfg.pe_dims, cfg.hidden_phi_layers,
         #        cfg.pe_dims, use_bn=cfg.mlp_use_bn, activation='relu', dropout_prob=0.0)
-        rho = MLP2(8, 8 * 4, 120, 8, use_bn=True, activation='relu', dropout_prob=0.0)
+        rho = MLP2(4, 8 * 4, 120, 8, use_bn=True, activation='relu', dropout_prob=0.0)
         self.positional_encoding = SignInvPe(phi=gin, rho=rho)
         print(self.positional_encoding)
         self.pe_embedding = torch.nn.Linear(8, self.cfg.node_emb_dims)

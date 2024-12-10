@@ -36,22 +36,9 @@ from scipy.sparse.linalg import eigsh, lobpcg
 from torch_geometric.utils import to_scipy_sparse_matrix
 import wandb
 
-
-
-def sparse_evd_IDK(laplacian, k=8):
-    # Convert the dense Laplacian to a sparse matrix
-    laplacian_sp = sp.csr_matrix(laplacian.cpu().numpy())
-    
-    # Compute the k smallest eigenvalues and corresponding eigenvectors
-    eigenvalues, eigenvectors = eigsh(laplacian_sp, k=k, which='SM', maxiter=1000000)
-    
-    # Convert back to torch tensors
-    eigenvalues = torch.from_numpy(eigenvalues)
-    eigenvectors = torch.from_numpy(eigenvectors)
-    
-    return eigenvalues, eigenvectors
-
-
+'''
+    This class transforms 
+'''
 class transform_LAP():
     def __init__(self, instance=None, PE1=True, device=None):
         self.instance = None
@@ -94,7 +81,7 @@ class transform_LAP():
         return hetero_data
 
 
-def sparse_evd(laplacian, k, device):
+def sparse_evd(laplacian, k, device, smallest):
     try: 
         sparse_laplacian = laplacian  # Create a sparse CSR matrix
 
@@ -108,19 +95,26 @@ def sparse_evd(laplacian, k, device):
         print("Eigsh failed!!")
         dense_laplacian = torch.tensor(laplacian.toarray(), device=device, dtype=torch.float32)
         eigvals, eigvecs = torch.linalg.eigh(dense_laplacian)
-        eigvals = eigvals[-k:]  # Largest eigenvalues
-        eigvecs = eigvecs[:, -k:]
-        #eigvals = eigvals[:k] # SMALLEST
-        #eigvecs = eigvecs[:, :k]
+        if not smallest:
+            eigvals = eigvals[-k:]  # Largest eigenvalues
+            eigvecs = eigvecs[:, -k:]
+        else:
+            eigvals = eigvals[:k] # SMALLEST
+            eigvecs = eigvecs[:, :k]
     
     return eigvals, eigvecs
 
-class transform_LAP_SIGNNET():
-    def __init__(self, instance=None, PE1=True, pe_dims=8, device=None):
+class transform_LAP_OG():
+    def __init__(self, instance=None, PE1=True, pe_dims=8, device=None, smallest=True):
         self.instance = instance
         self.PE1 = PE1
         self.pe_dims = pe_dims  # Number of smallest eigenvectors to extract
         self.device = device
+        if smallest:
+            print("PRINT SMALLEST EIGS")
+        else:
+            print("PRINT LARGEST EIGS")
+        self.smallest = smallest
 
     def __call__(self, hetero_data):
         node_mapping = {}  # Keep track of node indices from each type
@@ -156,7 +150,7 @@ class transform_LAP_SIGNNET():
         laplacian_sparse = to_scipy_sparse_matrix(edge_index, edge_weight, num_nodes=total_num_nodes)
         #laplacian = to_dense_adj(edge_index, edge_attr=edge_weight, max_num_nodes=total_num_nodes).squeeze(0)
         
-        eigenvalues, eigenvectors = sparse_evd(laplacian_sparse, k=self.pe_dims, device=self.device) 
+        eigenvalues, eigenvectors = sparse_evd(laplacian_sparse, k=self.pe_dims, device=self.device, smallest=self.smallest) 
         
         #d = min(self.pe_dims, total_num_nodes)
         smallest_eigenvalues = eigenvalues #eigenvalues[:d]
@@ -198,6 +192,7 @@ parser.add_argument(
     "--cache_dir", type=str, default=os.path.expanduser("~/.cache/relbench_examples")
 )
 args = parser.parse_args()
+
 
 
 device = torch.device(f'cuda:{args.gpu_id}') #torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -246,7 +241,7 @@ for split in ["train", "val", "test"]:
     table = task.get_table(split)
     table_input = get_link_train_table_input(table, task)
     dst_nodes_dict[split] = table_input.dst_nodes
-    transform = transform_LAP(PE1=cfg.PE1, device=device)
+    transform = transform_LAP(PE1=cfg.PE1, device=device, smallest=cfg.smallest)
     loader_dict[split] = NeighborLoader(
         data,
         num_neighbors=num_neighbors,
@@ -262,7 +257,7 @@ for split in ["train", "val", "test"]:
         transform=transform
     )
 
-model = Model_PEARL(
+model = Model_LINK(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
@@ -276,6 +271,8 @@ model = Model_PEARL(
     PE1=False,
     REL=False
 ).to(device)
+
+print("TOTAL NUM PARAMS: ", sum(p.numel() for p in model.parameters()))
 
 '''model = MODEL_LINK(
     data=data,
