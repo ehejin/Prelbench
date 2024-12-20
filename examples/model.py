@@ -559,6 +559,7 @@ class MODEL_LINK(Model):
             batch.edge_index,
             batch
         )
+        self.mult_subgraphs = True
 
         return self.head(x_dict[entity_table][: seed_time.size(0)])
 
@@ -568,6 +569,7 @@ class MODEL_LINK(Model):
         batch: HeteroData,
         entity_table: NodeType,
         dst_table: NodeType,
+        lap_list
     ) -> Tensor:
         if self.id_awareness_emb is None:
             raise RuntimeError(
@@ -575,21 +577,27 @@ class MODEL_LINK(Model):
             )
         seed_time = batch[entity_table].seed_time
 
-        for k in range(5):
-            W_list = []
-            for i in range(len(batch.Lap)):
-                if self.cfg.BASIS:
-                    W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
-                else:
-                    W = torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
+        if self.mult_subgraphs:
+            for i in range(len(lap_list)):
+                W = torch.randn(lap_list[i].shape[0],self.num_samples).to(self.device) #BxNxM
                 W_list.append(W)
-            if k < 4:
-                with torch.no_grad():
-                    self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
-            else:
-                PE = self.positional_encoding(batch.Lap, W_list, batch.edge_index, final=True)
-            del W_list, W
-            torch.cuda.empty_cache()
+            PE = self.positional_encoding(lap_list, W_list, batch.edge_index, running_sum=False, final=False)
+        else:
+            for k in range(5):
+                W_list = []
+                for i in range(len(batch.Lap)):
+                    if self.cfg.BASIS:
+                        W = torch.eye(batch.Lap[i].shape[0]).to(self.device)
+                    else:
+                        W = torch.randn(batch.Lap[i].shape[0],self.num_samples//5).to(self.device) #BxNxM
+                    W_list.append(W)
+                if k < 4:
+                    with torch.no_grad():
+                        self.positional_encoding.forward(batch.Lap, W_list, batch.edge_index, final=False)
+                else:
+                    PE = self.positional_encoding(batch.Lap, W_list, batch.edge_index, final=True)
+                del W_list, W
+                torch.cuda.empty_cache()
 
         x_dict = self.encoder(batch.tf_dict)
         # Add ID-awareness to the root node
