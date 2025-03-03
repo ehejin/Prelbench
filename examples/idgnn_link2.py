@@ -36,12 +36,14 @@ from scipy.sparse.linalg import eigsh, lobpcg
 from torch_geometric.utils import to_scipy_sparse_matrix
 import wandb
 
+from torch_geometric.data import Batch
+
 
 class transform_LAP():
     '''
     This class transforms 
     '''
-    def __init__(self, instance=None, PE1=True, device=None):
+    def __init__(self, instance=None, PE1=True, device=None, smallest=False):
         self.instance = None
         self.PE1 = PE1
     def __call__(self, hetero_data):
@@ -258,7 +260,7 @@ for split in ["train", "val", "test"]:
         transform=transform
     )
 
-model = Model_LINK(
+model = MODEL_LINK(
     data=data,
     col_stats_dict=col_stats_dict,
     num_layers=args.num_layers,
@@ -298,48 +300,59 @@ def train() -> float:
     loss_accum = count_accum = 0
     steps = 0
     total_steps = min(len(loader_dict["train"]), args.max_steps_per_epoch)
-    i = 0
-    mult_subgraphs = []
-    mult_laps = []
-    for batch in tqdm(loader_dict["train"], total=total_steps):
-        del batch.Lap
-        mult_subgraphs.append(batch)
-        mult_laps.append(batch.Lap)
-        if i == 5:
-            batch = batch.to(device)
-            out = model.forward_dst_readout(
-                mult_subgraphs, task.src_entity_table, task.dst_entity_table, mult_laps
-            ).flatten()
-
-            batch_size = batch[task.src_entity_table].batch_size
-
-            # Get ground-truth
-            input_id = batch[task.src_entity_table].input_id
-            src_batch, dst_index = train_sparse_tensor[input_id]
-
-            # Get target label
-            target = torch.isin(
-                batch[task.dst_entity_table].batch
-                + batch_size * batch[task.dst_entity_table].n_id,
-                src_batch + batch_size * dst_index,
-            ).float()
-
-            # Optimization
-            optimizer.zero_grad()
-            loss = F.binary_cross_entropy_with_logits(out, target)
-            loss.backward()
-
-            optimizer.step()
-
-            loss_accum += float(loss) * out.numel()
-            count_accum += out.numel()
-
-            steps += 1
-            if steps > args.max_steps_per_epoch:
+    
+    # Process subgraphs in batches
+    batch_size = 5  # Number of subgraphs to process together
+    for batch_idx in tqdm(range(0, total_steps, batch_size)):
+        mult_subgraphs = []
+        mult_laps = []
+        
+        # Collect batch_size subgraphs
+        for i in range(batch_size):
+            if batch_idx + i >= total_steps:
                 break
+                
+            batch = next(iter(loader_dict["train"]))
+            lap = batch.Lap
+            del batch.Lap  
+            mult_subgraphs.append(batch.cpu())
+            mult_laps.append(lap)
 
-            mult_subgraphs = []
-        i += 1
+        if not mult_subgraphs:  # Skip if no subgraphs collected
+            continue
+
+        mult_subgraphs_batch = Batch.from_data_list(mult_subgraphs).to(device)
+        mult_laps = [lap.to(device) for lap in mult_laps]
+
+        out = model.forward_dst_readout(
+            mult_subgraphs_batch, 
+            task.src_entity_table, 
+            task.dst_entity_table, 
+            mult_laps
+        ).flatten()
+
+        batch_size = batch[task.src_entity_table].batch_size
+        input_id = batch[task.src_entity_table].input_id
+        src_batch, dst_index = train_sparse_tensor[input_id]
+
+        target = torch.isin(
+            batch[task.dst_entity_table].batch
+            + batch_size * batch[task.dst_entity_table].n_id,
+            src_batch + batch_size * dst_index,
+        ).float()
+
+        # Optimization
+        optimizer.zero_grad()
+        loss = F.binary_cross_entropy_with_logits(out, target)
+        loss.backward()
+        optimizer.step()
+
+        loss_accum += float(loss) * out.numel()
+        count_accum += out.numel()
+
+        steps += batch_size
+        if steps > args.max_steps_per_epoch:
+            break
 
     if count_accum == 0:
         warnings.warn(

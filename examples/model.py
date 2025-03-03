@@ -475,7 +475,9 @@ class MODEL_LINK(Model):
         shallow_list: List[NodeType] = [],
         id_awareness: bool = False,
         cfg=None,
-        device=None
+        device=None,
+        PE1=False,
+        REL=False
     ):
         super().__init__(
             data=data,
